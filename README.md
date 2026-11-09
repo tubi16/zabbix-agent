@@ -60,11 +60,30 @@ moda gevşetilmez. Farklı bir anahtar sessizce mevcut anahtarın üzerine yazı
 
 ## Sunucu otomasyonuyla kullanım
 
-Sunucu yöneticisi bu repoyu kendi bilgisayarında klonlayıp sunucu reposundaki
-`enroll.py --agent-source /bu/reponun/yolu` seçeneğini kullanır. Otomasyon hedefe
-sadece `install.py` ve cihaz anahtarını aktarır, kurulum aşamalarını çalıştırır
-ve şifreli/şifresiz bağlantı testlerini yapar. Bu kullanımda hedef bilgisayara
-sunucu reposunun tamamını kopyalamak gerekmez.
+`enroll.py` bu agent reposunda değil, **staj-server** reposunda
+`zabbix/tls/enroll.py` konumundadır. Bu kullanım için iki repo da sunucu
+yöneticisinin bilgisayarında klonlu olmalıdır. Örnek klasör düzeni:
+
+```text
+zabbix-project/
+├── staj-server/zabbix/tls/enroll.py
+└── staj-agent/install.py
+```
+
+Komutu `staj-server` klasöründen çalıştır; IP ve SSH kullanıcısını değiştir:
+
+```sh
+cd /sunucu/reponun/yolu/staj-server
+python3 zabbix/tls/enroll.py --host YeniPC --address 172.16.53.150 --ssh kullanici@172.16.53.150 --server 172.16.53.132 --agent-source ../staj-agent
+```
+
+`--agent-source` bu agent reposunun kökünü, yani `install.py` dosyasının
+bulunduğu klasörü gösterir. Repolar yan yana değilse tam yol ver.
+Otomasyon hedefe sadece `install.py` ve cihaz anahtarını aktarır, kurulum
+aşamalarını çalıştırır ve şifreli/şifresiz bağlantı testlerini yapar.
+Hedef bilgisayara sunucu reposunun tamamını kopyalamak gerekmez.
+Yalnızca bu agent reposunu klonladıysan üstteki **Bağımsız kullanım** bölümünü
+izle; bu yöntem sunucuda host/PSK kaydını otomatik yapmaz.
 
 ## Geri alma
 
