@@ -42,6 +42,10 @@ parolası, Docker ya da dashboard kodu içermez.
 
 - Linux üzerinde Python 3, systemd ve kurulu Zabbix agent/agent2 gerekir.
 - İzleme template'i için Zabbix 7.4 veya daha yeni agent kullan.
+- CPU, RAM, kök disk, veri kesilmesi ve yeniden başlama trigger'ları sunucudaki
+  `Essential Items` / `Essential Items Active` template'inden hosta aktarılır.
+  Telegram alıcı ve action ayarları Zabbix arayüzünde yapılır; agent tarafında
+  bot token'ı veya ek bildirim script'i gerekmez.
 - Script agent paketini indirmez veya kurmaz; mevcut agent'ın TLS ayarlarını yapar.
 - Cihazda yönetici yetkisi gerekir; yalnızca ilgili agent servisi yeniden başlatılır.
 - Hostun gizli PSK dosyası sunucu yöneticisinden güvenli yolla alınmalıdır.
