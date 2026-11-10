@@ -1,5 +1,38 @@
 # Staj Agent — Linux TLS kurulumu
 
+Çok site / active-only üretim kurulumu: [installation.md](../installation.md).
+Sihirbazda Active-only seçeneği veya `install.py --active IP:PORT` kullanılır.
+
+## Kolay kurulum (önerilen)
+
+Repo klasöründe normal kullanıcıyla çalıştır:
+
+```sh
+python3 setup.py
+```
+
+Menüden **1: Server**, **2: Agent** veya **3: Sunucudan cihaz ekle** seç.
+Mevcut repo kullanılır; yeniden klonlama gerekmez. Eksik paketler için onay
+ve gerektiğinde sudo parolası istenir. SSH ve firewall ayarları değiştirilmez.
+
+- **Server:** Yeni kurulumda Zabbix web, Grafana ve server portlarını sorar;
+  Enter varsayılanı seçer. Parolaları otomatik üretir, Compose ayarlarını
+  doğrular ve servisleri başlatmadan onay ister. Mevcut `.env` korunur.
+- **Agent:** Eksik agent paketini onayla kurar. TLS için host adı, sunucudan
+  güvenli alınan PSK dosyasının yolu ve sunucu IP adresi/alt ağlarını sorar.
+- **Cihaz ekle:** Sunucu reposunda çalıştır. Cihaz adı, cihaz IP'si, sunucunun
+  agent tarafından görülen IP'si, SSH hedefi ve agent repo yolu sorulur.
+  PSK üretimi ve Zabbix kaydı otomatik yapılır; önce plan gösterilir.
+  Hedefte Python 3 ve agent kurulu, sunucuda template hazır olmalıdır.
+
+Agent kurulumu tek başına sunucuda host oluşturmaz. Otomatik kayıt için
+sunucudaki **3** seçeneğini kullan. Grafana veri kaynağı ve host-sync token
+ayarları aşağıdaki yönergelerde ayrıca tamamlanır.
+
+Servis durdurma: sunucu klasöründe `sudo docker compose stop` (veriler korunur).
+Agent geri alma: kurulum çıktısında belirtilen ilk yedek ve geri alma komutu.
+
+
 Kurulu Zabbix agent veya agent2 servisini cihaza özel TLS-PSK ile yapılandırır.
 Bu klasör ayrı bir Git reposuna alınabilir; sunucu reposuna veya Python
 paketlerine bağımlı değildir. Zabbix/Grafana hesabı, API istemcisi, Admin

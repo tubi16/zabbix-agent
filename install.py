@@ -17,6 +17,16 @@ def host_name(value):
 TLS_DIRECTORY = Path("/etc/zabbix/tls")
 
 
+def active_endpoint(value):
+    """Accept a single DNS/IPv4/IPv6 endpoint, not agent config fragments."""
+    match = re.fullmatch(r"(?:\[([0-9a-fA-F:]+)\]|([A-Za-z0-9][A-Za-z0-9.-]*)):(\d+)", value)
+    if not match or not 1 <= int(match[3]) <= 65535:
+        raise argparse.ArgumentTypeError("Use proxy.example.com:10051 or [IPv6]:10051")
+    if match[1]:
+        ipaddress.IPv6Address(match[1])
+    return value
+
+
 def update_setting(text, name, value):
     pattern = r"(?m)^\s*" + re.escape(name) + r"\s*=.*$"
     line = name + "=" + value
@@ -42,11 +52,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True, type=host_name)
     parser.add_argument("--key", type=Path, required=True)
-    parser.add_argument("--server", required=True, action="append", help="Additional allowed server IP/subnet; repeatable")
+    parser.add_argument("--server", action="append", default=[], help="Additional allowed server IP/subnet; repeatable")
+    parser.add_argument("--active", type=active_endpoint, help="Active-only destination: proxy IP/DNS:port; disables passive listener")
     parser.add_argument("--agent", choices=["auto", "classic", "agent2"], default="auto")
     parser.add_argument("--port", type=int, help="Agent listening port (1024–32767)")
     parser.add_argument("--strict", action="store_true", help="Reject unencrypted connections")
     args = parser.parse_args()
+    if not args.server and not args.active:
+        parser.error("Specify --server for passive checks or --active for active-only checks")
+    if args.active and args.server:
+        parser.error("--active is active-only; do not combine it with --server")
     if os.geteuid() != 0:
         raise SystemExit("Run with sudo; never send your sudo password to anyone")
     for server in args.server:
@@ -71,7 +86,7 @@ def main():
             if Path(included).is_dir():
                 raise SystemExit("Directory Include found; inspect included configs before installing")
             content = Path(included).read_text()
-            if re.search(r"(?m)^\s*(Include|Server|Hostname|TLS\w*)\s*=", content):
+            if re.search(r"(?m)^\s*(Include|Server|ServerActive|StartAgents|Hostname|TLS\w*)\s*=", content):
                 raise SystemExit("Conflicting/nested agent settings found in " + included + "; inspect before installing")
     backup = config.with_name(config.name + ".before-staj-psk-" +
                               datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
@@ -103,6 +118,14 @@ def main():
                 "TLSConnect": "psk", "TLSAccept": "psk" if args.strict or already_strict else "unencrypted,psk"}
     if args.port is not None:
         settings["ListenPort"] = str(args.port)
+    if args.active:
+        # An absent Server disables passive checks in agent2; classic uses StartAgents.
+        original_without_server = re.sub(r"(?m)^\s*Server\s*=.*$", "", original)
+        settings.pop("Server")
+        settings.update({"ServerActive": args.active, "TLSAccept": "psk"})
+        if binary == "zabbix_agentd":
+            settings["StartAgents"] = "0"
+        original = original_without_server
     updated = original
     for name, value in settings.items():
         updated = update_setting(updated, name, value)
@@ -117,7 +140,7 @@ def main():
         shutil.copy2(backup, config)
         subprocess.run(["systemctl", "restart", service], capture_output=True)
         raise SystemExit("Restart failed; original configuration restored")
-    print("Agent ready:", args.host, "strict PSK" if args.strict or already_strict else "PSK + temporary plaintext acceptance")
+    print("Agent ready:", args.host, "strict PSK" if args.active or args.strict or already_strict else "PSK + temporary plaintext acceptance")
     print("Config backup:", backup)
     print("Rollback: sudo cp", backup, config, "&& sudo systemctl restart", service)
 
