@@ -25,7 +25,7 @@ class WizardTests(unittest.TestCase):
 
     def test_existing_directory_never_overwritten(self):
         with tempfile.TemporaryDirectory() as temp:
-            (Path(temp) / 'staj-server').mkdir()
+            (Path(temp) / 'zabbix-server').mkdir()
             with patch.object(wizard.shutil, 'which', return_value='/usr/bin/git'), patch.object(wizard, 'run') as run:
                 with self.assertRaises(SystemExit):
                     wizard.checkout('server', Path(temp), 'arch')
@@ -33,7 +33,7 @@ class WizardTests(unittest.TestCase):
 
     def test_wrong_origin_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
-            (Path(temp) / 'staj-agent' / '.git').mkdir(parents=True)
+            (Path(temp) / 'zabbix-agent' / '.git').mkdir(parents=True)
             with patch.object(wizard.shutil, 'which', return_value='/usr/bin/git'), patch.object(wizard.subprocess, 'check_output', return_value='https://example.org/other.git'), patch.object(wizard, 'run') as run:
                 with self.assertRaises(SystemExit):
                     wizard.checkout('agent', Path(temp), 'arch')
@@ -43,10 +43,42 @@ class WizardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             key = Path(temp) / 'key'
             key.write_text('invalid')
-            with patch.object(wizard, 'install_agent', return_value='agent2'), patch.object(wizard, 'ask', return_value=True), patch('builtins.input', side_effect=['host', str(key)]), patch.object(wizard, 'run') as run:
+            with patch.object(wizard, 'install_agent', return_value='agent2'), patch.object(wizard, 'ask', return_value=True), patch('builtins.input', side_effect=['host', '1', '1', '192.0.2.10', '10050', '192.0.2.1', str(key)]), patch.object(wizard, 'run') as run:
                 with self.assertRaises(SystemExit):
                     wizard.agent(Path(temp), {'ID': 'arch'})
                 run.assert_not_called()
+
+    def test_plaintext_passive_has_ip_port_and_needs_no_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(wizard, 'install_agent', return_value='agent2'), patch.object(wizard, 'ask', return_value=True), patch('builtins.input', side_effect=['pc1', '1', '2', '192.0.2.10', '10060', '192.0.2.1']), patch.object(wizard, 'run') as run:
+                wizard.agent(Path(temp), {'ID': 'arch'})
+            args = list(map(str, run.call_args.args))
+            self.assertIn('--unencrypted', args)
+            self.assertNotIn('--key', args)
+            self.assertEqual(args[args.index('--listen-ip') + 1], '192.0.2.10')
+            self.assertEqual(args[args.index('--port') + 1], '10060')
+            self.assertFalse((Path(temp) / 'private').exists())
+
+    def test_active_ipv6_plaintext_can_be_declined(self):
+        with patch.object(wizard, 'install_agent', return_value='classic'), patch.object(wizard, 'ask', return_value=False), patch('builtins.input', side_effect=['pc1', '2', '2', '2001:db8::1', '10051']), patch.object(wizard, 'run') as run:
+            wizard.agent(Path('/tmp/not-created'), {'ID': 'arch'})
+            run.assert_not_called()
+
+    def test_active_psk_uses_selected_endpoint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            key = Path(temp) / 'key'; key.write_text('ab' * 32)
+            with patch.object(wizard, 'install_agent', return_value='agent2'), patch.object(wizard, 'ask', return_value=True), patch('builtins.input', side_effect=['pc1', '2', '1', '2001:db8::1', '10061', str(key)]), patch.object(wizard, 'run') as run:
+                wizard.agent(Path(temp), {'ID': 'arch'})
+            args = list(map(str, run.call_args.args))
+            self.assertEqual(args[args.index('--active') + 1], '[2001:db8::1]:10061')
+            self.assertIn('--strict', args)
+            self.assertIn('--key', args)
+
+    def test_invalid_port_and_source_reprompt(self):
+        with patch('builtins.input', side_effect=['0', '65536', '10050']):
+            self.assertEqual(wizard.prompt('Port', validator=wizard.valid_port), '10050')
+        with patch('builtins.input', side_effect=['192.0.2.1\nTLSAccept=unencrypted', '192.0.2.1']):
+            self.assertEqual(wizard.prompt('Source', validator=wizard.valid_sources), '192.0.2.1')
 
     def test_compose_failure_prevents_start(self):
         def execute(*args, **kwargs):

@@ -57,7 +57,7 @@ def enroll(target):
     ssh = prompt('SSH kullanıcısı@cihaz veya SSH alias', default=address)
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.@:-]*', ssh):
         raise ValueError('Geçersiz SSH hedefi.')
-    agent_source = Path(prompt('Agent repo yolu', str(target.parent / 'staj-agent'))).expanduser().resolve()
+    agent_source = Path(prompt('Agent repo yolu', str(target.parent / 'zabbix-agent'))).expanduser().resolve()
     if not (agent_source / 'install.py').is_file():
         raise ValueError('Agent repo yolunda install.py bulunamadı.')
     command = [sys.executable, target / 'zabbix/tls/enroll.py', '--host', host,
@@ -93,7 +93,7 @@ def packages(distro, names):
 def checkout(kind, base, distro):
     if not shutil.which('git'):
         packages(distro, ['git'])
-    target = base / ('staj-' + kind)
+    target = base / ('zabbix-' + kind)
     url = 'https://github.com/tubi16/zabbix-' + kind + '.git'
     if target.exists():
         if target.is_symlink() or not (target / '.git').is_dir():
@@ -172,52 +172,72 @@ def install_agent(info):
     return 'agent2'
 
 
+def valid_choice(value):
+    if value not in {'1', '2'}:
+        raise ValueError('1 veya 2 seç.')
+
+
+def valid_port(value):
+    if not value.isascii() or not value.isdigit() or not 1024 <= int(value) <= 32767:
+        raise ValueError('1024–32767 arasında port gir.')
+
+
+def valid_sources(value):
+    for source in value.split(','):
+        ipaddress.ip_network(source.strip(), strict=False)
+
+
 def agent(target, info):
     print('Paket yöneticisi kurulum sırasında agent servisini başlatabilir.')
     choice = install_agent(info)
-    if not ask('Mevcut PSK dosyasıyla TLS yapılandırılsın mı? Agent servisi yeniden başlatılır.'):
-        print('Paket hazır. Host kaydı ve TLS için sunucu reposunda zabbix/tls/enroll.py kullan.')
-        return
     host = prompt('Zabbix teknik host adı', validator=valid_host)
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', host):
-        raise SystemExit('Geçersiz host adı.')
-    key_input = input('PSK dosya yolu (boş: cihaza özel anahtar üret): ').strip()
-    if key_input:
-        key = Path(key_input).expanduser().resolve()
-    else:
-        private = target / 'private'
-        if private.is_symlink():
-            raise SystemExit('private sembolik bağlantı olamaz.')
-        private.mkdir(mode=0o700, exist_ok=True)
-        private.chmod(0o700)
-        key = private / (host + '.psk')
-        if key.is_symlink():
-            raise SystemExit('PSK sembolik bağlantı olamaz.')
-        if not key.exists():
-            with os.fdopen(os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
-                stream.write(secrets.token_hex(32) + '\n')
-        key.chmod(0o600)
-        print('Cihaza özel PSK dosyası hazır:', key)
-    if not key.is_file() or not re.fullmatch(r'[0-9a-fA-F]{64}', key.read_text().strip()):
-        raise SystemExit('PSK dosyası 64 hexadecimal karakter içermeli.')
-    command = [sys.executable, target / 'install.py', '--host', host, '--key', key, '--agent', choice, '--strict']
-    if ask('Active-only izleme kullanılsın mı? Çok site kurulumunda önerilir; pasif dinleme kapanır.'):
-        # Validate with the installer, before any privileged mutation.
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('agent_installer', target / 'install.py')
-        installer = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(installer)
-        endpoint = prompt('Yerel proxy IP/DNS:port (örn. 192.168.1.10:10051)', validator=installer.active_endpoint)
-        command.extend(['--active', endpoint])
-    else:
-        sources = input('İzinli sunucu/proxy IP/alt ağları (virgülle): ').strip().split(',')
-        for source in sources:
-            ipaddress.ip_network(source.strip(), strict=False)
+    mode = prompt('İzleme: 1) Pasif  2) Aktif (active-only)', '1', valid_choice)
+    encryption = prompt('Bağlantı: 1) Şifreli (PSK)  2) Şifresiz', '1', valid_choice)
+    command = [sys.executable, target / 'install.py', '--host', host, '--agent', choice]
+    if mode == '1':
+        address = prompt('Agent dinleme IP adresi (bu cihazın IP adresi; 0.0.0.0: tüm IPv4 arayüzleri)',
+                         '0.0.0.0', ipaddress.ip_address)
+        port = prompt('Agent dinleme portu', '10050', valid_port)
+        sources = prompt('İzinli sunucu/proxy IP veya alt ağları (virgülle)', validator=valid_sources)
+        command.extend(['--listen-ip', address, '--port', port])
+        for source in sources.split(','):
             command.extend(['--server', source.strip()])
-    print('Strict TLS uygulanacak. Sunucuda aynı host/PSK kimliği ayrıca kayıtlı olmalı.')
-    if ask('Agent config yedeği alınarak TLS uygulansın mı?'):
+    else:
+        address = prompt('Zabbix sunucu/proxy IP adresi', validator=ipaddress.ip_address)
+        port = prompt('Zabbix sunucu/proxy portu', '10051', valid_port)
+        endpoint = f'[{address}]:{port}' if ':' in address else f'{address}:{port}'
+        command.extend(['--active', endpoint])
+    if encryption == '1':
+        key_input = input('PSK dosya yolu (boş: cihaza özel anahtar üret): ').strip()
+        if key_input:
+            key = Path(key_input).expanduser().resolve()
+        else:
+            private = target / 'private'
+            if private.is_symlink():
+                raise SystemExit('private sembolik bağlantı olamaz.')
+            private.mkdir(mode=0o700, exist_ok=True)
+            private.chmod(0o700)
+            key = private / (host + '.psk')
+            if key.is_symlink():
+                raise SystemExit('PSK sembolik bağlantı olamaz.')
+            if not key.exists():
+                with os.fdopen(os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
+                    stream.write(secrets.token_hex(32) + '\n')
+            key.chmod(0o600)
+            print('Cihaza özel PSK dosyası hazır:', key)
+        if not key.is_file() or not re.fullmatch(r'[0-9a-fA-F]{64}', key.read_text().strip()):
+            raise SystemExit('PSK dosyası 64 hexadecimal karakter içermeli.')
+        command.extend(['--key', key, '--strict'])
+    else:
+        command.append('--unencrypted')
+    print('Özet:', host, 'pasif' if mode == '1' else 'aktif', address, 'port', port,
+          'PSK' if encryption == '1' else 'şifresiz')
+    print('Zabbix template:', 'Essential Items Linux' if mode == '1' else 'Essential Items Linux Active')
+    print('Host → Encryption →', 'Connections to host:' if mode == '1' else 'Connections from host:',
+          'PSK; kimlik: zabbix-' + host if encryption == '1' else 'No encryption')
+    if ask('Config yedeği alınarak ayarlar uygulansın ve agent servisi yeniden başlatılsın mı?'):
         run(*command, root=True)
-        print('Geri alma: install.py çıktısındaki yedek ve komutu kullan; sunucu TLS ayarını da eşleştir.')
+        print('Geri alma: install.py çıktısındaki yedek ve komutu kullan; sunucu bağlantı ayarını da eşleştir.')
 
 
 def main():

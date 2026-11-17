@@ -1,4 +1,4 @@
-"""Install a staged or strict PSK configuration for Linux agent or agent2."""
+"""Configure Linux agent or agent2 with optional PSK encryption."""
 import argparse
 from datetime import datetime, timezone
 import grp
@@ -51,13 +51,21 @@ def select_agent(choice):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True, type=host_name)
-    parser.add_argument("--key", type=Path, required=True)
+    parser.add_argument("--key", type=Path)
+    parser.add_argument("--unencrypted", action="store_true", help="Explicitly use plaintext; no PSK required")
+    parser.add_argument("--listen-ip", type=ipaddress.ip_address, help="Local agent listening IP")
     parser.add_argument("--server", action="append", default=[], help="Additional allowed server IP/subnet; repeatable")
     parser.add_argument("--active", type=active_endpoint, help="Active-only destination: proxy IP/DNS:port; disables passive listener")
     parser.add_argument("--agent", choices=["auto", "classic", "agent2"], default="auto")
     parser.add_argument("--port", type=int, help="Agent listening port (1024–32767)")
     parser.add_argument("--strict", action="store_true", help="Reject unencrypted connections")
     args = parser.parse_args()
+    if args.unencrypted and (args.key or args.strict):
+        parser.error("--unencrypted cannot be combined with --key or --strict")
+    if not args.unencrypted and not args.key:
+        parser.error("Specify --key for PSK or --unencrypted for plaintext")
+    if args.active and (args.listen_ip is not None or args.port is not None):
+        parser.error("Listening IP/port apply only to passive checks")
     if not args.server and not args.active:
         parser.error("Specify --server for passive checks or --active for active-only checks")
     if args.active and args.server:
@@ -68,8 +76,8 @@ def main():
         ipaddress.ip_network(server, strict=False)
     if args.port is not None and not 1024 <= args.port <= 32767:
         raise SystemExit("Agent port must be between 1024 and 32767")
-    key = args.key.read_text().strip()
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", key):
+    key = args.key.read_text().strip() if args.key else None
+    if key is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", key):
         raise SystemExit("Expected a 256-bit hexadecimal PSK")
     service, binary, filename = select_agent(args.agent)
     if shutil.which(binary) is None:
@@ -86,43 +94,57 @@ def main():
             if Path(included).is_dir():
                 raise SystemExit("Directory Include found; inspect included configs before installing")
             content = Path(included).read_text()
-            if re.search(r"(?m)^\s*(Include|Server|ServerActive|StartAgents|Hostname|TLS\w*)\s*=", content):
+            if re.search(r"(?m)^\s*(Include|Server|ServerActive|StartAgents|ListenIP|ListenPort|Hostname|TLS\w*)\s*=", content):
                 raise SystemExit("Conflicting/nested agent settings found in " + included + "; inspect before installing")
-    backup = config.with_name(config.name + ".before-staj-psk-" +
+    backup = config.with_name(config.name + ".before-zabbix-psk-" +
                               datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
     shutil.copy2(config, backup)
     backup.chmod(0o600)
-    directory = TLS_DIRECTORY
-    directory.mkdir(mode=0o750, exist_ok=True)
-    gid = grp.getgrnam("zabbix").gr_gid
-    os.chown(directory, 0, gid)
-    directory.chmod(0o750)
-    target = directory / ("staj-" + args.host + ".psk")
-    if target.is_symlink():
-        raise SystemExit("Refusing a symlink as a PSK file")
-    if target.exists() and target.read_text().strip() != key:
-        raise SystemExit("Different existing PSK found; refusing to rotate it implicitly")
-    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
-    with os.fdopen(descriptor, "w") as file:
-        file.write(key + "\n")
-    os.chown(target, 0, gid)
-    target.chmod(0o640)
+    if not args.unencrypted:
+        directory = TLS_DIRECTORY
+        directory.mkdir(mode=0o750, exist_ok=True)
+        gid = grp.getgrnam("zabbix").gr_gid
+        os.chown(directory, 0, gid)
+        directory.chmod(0o750)
+        target = directory / ("zabbix-" + args.host + ".psk")
+        if target.is_symlink():
+            raise SystemExit("Refusing a symlink as a PSK file")
+        if target.exists() and target.read_text().strip() != key:
+            raise SystemExit("Different existing PSK found; refusing to rotate it implicitly")
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+        with os.fdopen(descriptor, "w") as file:
+            file.write(key + "\n")
+        os.chown(target, 0, gid)
+        target.chmod(0o640)
     allowed = re.search(r"(?m)^\s*Server=(.*)$", original)
     servers = [s.strip() for s in allowed.group(1).split(",")] if allowed else []
     for server in args.server:
         if server not in servers:
             servers.append(server)
     already_strict = re.search(r"(?m)^\s*TLSAccept\s*=\s*psk\s*$", original) is not None
-    settings = {"Server": ",".join(s for s in servers if s), "Hostname": args.host,
-                "TLSPSKIdentity": "staj-" + args.host, "TLSPSKFile": str(target),
-                "TLSConnect": "psk", "TLSAccept": "psk" if args.strict or already_strict else "unencrypted,psk"}
+    settings = {"Server": ",".join(s for s in servers if s), "Hostname": args.host}
+    if args.unencrypted:
+        # Remove TLS references from config only; retain key/certificate files for rollback.
+        original = re.sub(r"(?m)^\s*TLS\w*\s*=.*$", "", original)
+        settings.update({"TLSConnect": "unencrypted", "TLSAccept": "unencrypted"})
+    else:
+        settings.update({"TLSPSKIdentity": "zabbix-" + args.host, "TLSPSKFile": str(target),
+                         "TLSConnect": "psk",
+                         "TLSAccept": "psk" if args.strict or already_strict else "unencrypted,psk"})
+    if args.listen_ip is not None:
+        settings["ListenIP"] = str(args.listen_ip)
+    if not args.active:
+        # A passive selection must not keep sending active checks to an old destination.
+        original = re.sub(r"(?m)^\s*ServerActive\s*=.*$", "", original)
+        if binary == "zabbix_agentd" and re.search(r"(?m)^\s*StartAgents\s*=\s*0\s*$", original):
+            settings["StartAgents"] = "3"
     if args.port is not None:
         settings["ListenPort"] = str(args.port)
     if args.active:
         # An absent Server disables passive checks in agent2; classic uses StartAgents.
         original_without_server = re.sub(r"(?m)^\s*Server\s*=.*$", "", original)
         settings.pop("Server")
-        settings.update({"ServerActive": args.active, "TLSAccept": "psk"})
+        settings.update({"ServerActive": args.active, "TLSAccept": "unencrypted" if args.unencrypted else "psk"})
         if binary == "zabbix_agentd":
             settings["StartAgents"] = "0"
         original = original_without_server
@@ -140,7 +162,7 @@ def main():
         shutil.copy2(backup, config)
         subprocess.run(["systemctl", "restart", service], capture_output=True)
         raise SystemExit("Restart failed; original configuration restored")
-    print("Agent ready:", args.host, "strict PSK" if args.active or args.strict or already_strict else "PSK + temporary plaintext acceptance")
+    print("Agent ready:", args.host, "unencrypted" if args.unencrypted else ("strict PSK" if args.active or args.strict or already_strict else "PSK + temporary plaintext acceptance"))
     print("Config backup:", backup)
     print("Rollback: sudo cp", backup, config, "&& sudo systemctl restart", service)
 

@@ -40,7 +40,7 @@ class RealTLSTest(unittest.TestCase):
         binary = shutil.which("zabbix_agentd")
         if not binary or not hasattr(ssl.SSLContext, "set_psk_client_callback"):
             self.skipTest("Requires classic agent and Python TLS PSK support")
-        with tempfile.TemporaryDirectory(prefix="staj-tls-test-") as directory:
+        with tempfile.TemporaryDirectory(prefix="zabbix-tls-test-") as directory:
             root = Path(directory)
             key = secrets.token_hex(32)
             (root / "key.psk").write_text(key + "\n")
